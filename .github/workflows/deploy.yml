@@ -1,8 +1,13 @@
 name: Build and Deploy
 
+# 배포는 모노레포(woowacourse-teams/2026-to-discount)의
+# .github/workflows/deploy-api.yml로 옮겼다. 이 워크플로는 그쪽 push
+# 트리거가 검증될 때까지의 폴백으로만 수동 실행을 남겨둔다.
+
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
+  # push:
+  #   branches: [main]
 
 jobs:
   build-and-deploy:
