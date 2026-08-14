@@ -29,9 +29,18 @@ class OfferRecordTest {
 
     @Test
     void nullTierModeIsExclusive() {
-        // tracker가 tier_mode를 실어 보내기 전의 export.json에는 이 필드이
+        // tracker가 tier_mode를 실어 보내기 전의 export.json에는 이 필드가
         // 아예 없다. 없으면 지금까지의 해석(택일)이다.
         assertFalse(record(4000, null, null).isCumulative());
+    }
+
+    @Test
+    void cumulativeWithNullTiersFallsBackToAmount() {
+        // schema.py는 cumulative 레코드에 구간 2개 이상을 요구하지만, 필드
+        // 전체가 방어적으로 null 허용이라 tiers==null이 와도 NPE 대신 원장
+        // amount로 내려가야 한다 — exclusive 갈래와 같은 fallback.
+        OfferRecord r = record(4000, "cumulative", null);
+        assertEquals(4000, r.amountAsOf(TODAY));
     }
 
     @Test

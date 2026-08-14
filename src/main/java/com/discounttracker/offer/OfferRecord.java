@@ -130,6 +130,9 @@ public record OfferRecord(
      */
     public Integer amountAsOf(LocalDate today) {
         if (isCumulative()) {
+            if (tiers == null || tiers.isEmpty()) {
+                return amount;
+            }
             Integer floor = DiscountLadder.of(claimableTiers(today)).floorAmount();
             return floor != null ? floor : amount;
         }
