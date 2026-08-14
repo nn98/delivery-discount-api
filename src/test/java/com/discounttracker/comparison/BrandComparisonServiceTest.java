@@ -245,7 +245,7 @@ class BrandComparisonServiceTest {
         // 상세 패널이 읽는 값 — 서비스는 해석하지 않고 그대로 흘려보낸다.
         OfferRecord detailed = new OfferRecord("yogiyo", "굽네치킨", 7000, "최대", true,
                 "discount", null, "최대 7,000원 할인", "2026-07-27T14:25:00+09:00",
-                "x.jpg", 15000, List.of(new DiscountTier(15000, 3000, null, null, null, null)), "1일 1회",
+                "x.jpg", 15000, List.of(new DiscountTier(15000, 3000, null, null, null, null, null)), "1일 1회",
                 "2026-08-31", "선착순 품절", true);
         Offer offer = serviceWith(List.of(detailed), "brands: {}")
                 .compare().get(0).offers().get(0);
@@ -380,11 +380,11 @@ class BrandComparisonServiceTest {
     // --- 구간별 만료 (ADR-008) ---
 
     private DiscountTier tier(Integer minOrder, Integer amount, String expiresAt) {
-        return new DiscountTier(minOrder, amount, null, null, null, expiresAt);
+        return new DiscountTier(minOrder, amount, null, null, null, null, expiresAt);
     }
 
     private DiscountTier soldOutTier(Integer minOrder, Integer amount) {
-        return new DiscountTier(minOrder, amount, null, null, true, null);
+        return new DiscountTier(minOrder, amount, null, null, null, true, null);
     }
 
     private OfferRecord recWithTiers(String platform, String brand, Integer amount,
