@@ -36,17 +36,8 @@
 #     endsOn: 2026-08-11
 #     priority: 1
 
-banners: [
-  {
-    id: bbq-20260819,
-    brand: BBQ,
-    platform: baemin,
-    url: https://baemin.go.link/5H0ry,
-    amount: "7,000원",
-    period: 오전 11시부터 선착순,
-    extra: 최소주문 18,000원, 선착순 300명,
-    startsOn: 2026-08-19,
-    endsOn: 2026-08-19,
-    priority: 1
-  }
-]
+# 이 사본(classpath:banners.yml)은 실서버가 읽지 않는다. 운영 서버는
+# DISCOUNT_BANNERS_PATH=file:.../data/banners.yml 로 jar 밖 파일을 문다.
+# 여기에 배너를 적으면 화면에 안 뜬다 — data/banners.yml을 고치고 POST /api/reload.
+#
+banners: []
