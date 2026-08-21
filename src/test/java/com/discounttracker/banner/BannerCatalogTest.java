@@ -1,6 +1,7 @@
 package com.discounttracker.banner;
 
 import org.junit.jupiter.api.Test;
+import com.discounttracker.brand.BrandCatalog;
 import org.springframework.core.io.ByteArrayResource;
 
 import java.nio.charset.StandardCharsets;
@@ -44,10 +45,86 @@ class BannerCatalogTest {
             endsOn: 2026-08-07
         """;
 
+    @Test
+    void startsUpEvenWhenTheFileIsUnparseable() {
+        // 2026-08-21: 배너 항목 사이 콤마 하나가 빠져 이 생성자가 예외를 던졌고,
+        // 스프링 컨텍스트가 못 떠 API 전체가 502였다(systemd 재시작 4회).
+        // 배너는 부가 정보다 — 배너만 비고 브랜드·통계·이벤트 수집은 살아야 한다.
+        String broken = """
+            banners: [
+              { id: a, platform: baemin, url: https://x, amount: "1원",
+                period: 오늘, startsOn: 2026-08-21, endsOn: 2026-08-21 }
+              { id: b, platform: baemin, url: https://y, amount: "2원",
+                period: 오늘, startsOn: 2026-08-21, endsOn: 2026-08-21 }
+            ]
+            """;
+        BannerCatalog catalog = catalogOn(broken, "2026-08-21");
+        assertEquals(List.of(), catalog.active());
+    }
+
+    @Test
+    void keepsPreviousBannersWhenAReloadFails() {
+        // 고치려다 더 깨뜨렸을 때, 멀쩡히 떠 있던 배너까지 사라지면 안 된다.
+        BannerCatalog catalog = catalogOn(YAML, "2026-08-11");
+        int before = catalog.active().size();
+        assertTrue(before > 0);
+
+        catalog.reload();
+        assertEquals(before, catalog.active().size());
+    }
+
     /** 한국 날짜 기준 그날 09:00. UTC로 떠 있어도 같은 날이 나오는지까지 본다. */
     private BannerCatalog catalogOn(String yaml, String isoDate) {
         Clock clock = Clock.fixed(Instant.parse(isoDate + "T00:00:00Z"), SEOUL);
-        return new BannerCatalog(new ByteArrayResource(yaml.getBytes(StandardCharsets.UTF_8)), clock);
+        return new BannerCatalog(new ByteArrayResource(yaml.getBytes(StandardCharsets.UTF_8)),
+                clock, brands());
+    }
+
+    /** 별칭 하나만 있는 최소 브랜드 목록. 배너가 별칭표를 타는지만 본다. */
+    private BrandCatalog brands() {
+        String yaml = """
+                brands:
+                  굽네치킨:
+                    category: chicken
+                    aliases: [goobne]
+                """;
+        return new BrandCatalog(new ByteArrayResource(yaml.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    @Test
+    void rewritesBannerBrandToItsCanonicalName() {
+        // 프론트가 배너 브랜드명을 그대로 로고 파일명으로 쓴다 — 앱에서 복사한
+        // 표기(goobne)가 그대로 나가면 로고를 못 찾고 폴백 글자만 뜬다.
+        String yaml = """
+                banners:
+                  - id: goobne-20260817
+                    brand: goobne
+                    platform: yogiyo
+                    url: https://example.test/a
+                    amount: "6,500원"
+                    period: 매일 오후 3시부터
+                    startsOn: 2026-08-17
+                    endsOn: 2026-08-23
+                """;
+        assertEquals("굽네치킨", catalogOn(yaml, "2026-08-20").active().get(0).brand());
+    }
+
+    @Test
+    void leavesUnknownBrandNamesAlone() {
+        // 별칭표에 없는 이름은 손대지 않는다 — 대표명을 직접 적은 배너가
+        // 대부분이고, 모르는 이름을 지어내면 없는 로고를 부르게 된다.
+        String yaml = """
+                banners:
+                  - id: bhc-20260820
+                    brand: bhc
+                    platform: baemin
+                    url: https://example.test/b
+                    amount: "8,000원"
+                    period: 오후 5시부터
+                    startsOn: 2026-08-20
+                    endsOn: 2026-08-20
+                """;
+        assertEquals("bhc", catalogOn(yaml, "2026-08-20").active().get(0).brand());
     }
 
     @Test

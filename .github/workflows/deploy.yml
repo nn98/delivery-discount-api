@@ -1,13 +1,17 @@
 name: Build and Deploy
 
-# 배포는 모노레포(woowacourse-teams/2026-to-discount)의
-# .github/workflows/deploy-api.yml로 옮겼다. 이 워크플로는 그쪽 push
-# 트리거가 검증될 때까지의 폴백으로만 수동 실행을 남겨둔다.
+# 2026-08-21: 배포를 여기로 되돌렸다. 모노레포로 옮겨 두니 web은 여전히
+# nn98/delivery-discount-web에서 Vercel로 나가고 api만 모노에서 나가서,
+# 양쪽 저장소에 서로 다른 "뒤처진 사본"이 하나씩 생겼다 — 하루에 두 번
+# 벌어졌고 그중 하나는 문서가 코드보다 앞서 있었다.
+#
+# 모노레포 쪽 deploy-api.yml은 수동 폴백으로만 남겼다. 둘 다 push로
+# 배포하면 같은 서버에 경쟁 배포가 된다.
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
-  # push:
-  #   branches: [main]
 
 jobs:
   build-and-deploy:

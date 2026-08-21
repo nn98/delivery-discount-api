@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 /**
  * 방문 이벤트 수집. 브라우저가 배치로 보내고 서버는 받아 적기만 한다.
@@ -30,15 +31,24 @@ import java.util.UUID;
 @RequestMapping("/api")
 public class EventController {
 
-    /** 프론트가 실제로 보내는 것만 받는다. 모르는 이름은 조용히 버린다. */
+    /**
+     * 프론트가 실제로 보내는 것만 받는다. 모르는 이름은 조용히 버린다.
+     *
+     * <p>조용히 버리는 대신 목록을 프론트와 맞춰야 한다. 필터 시트와
+     * 담아보기 화면을 올린 뒤 여섯 종이 여기 없어서, 서버가 받자마자
+     * 버리고 있었다 — 정작 A/B가 답하려는 질문(조건을 설정한 사람이
+     * 링크 이동까지 가는가)이 그 이벤트들에 걸려 있었다.
+     */
     private static final Set<String> ALLOWED_EVENTS = Set.of(
-            "page_view", "page_exit", "category_change", "classify_change",
-            "brand_expand", "offer_link_click", "membership_open", "capture_note_seen",
-            "banner_click", "platform_filter_toggle", "filters_reset", "title_bar_hide_toggle",
-            "brands_retry", "scroll_to_top", "membership_toggle");
+            "page_view", "page_exit", "category_change", "brand_expand",
+            "offer_link_click", "banner_click", "platform_filter_toggle", "filters_reset",
+            "brands_retry", "scroll_to_top", "membership_toggle", "filters_apply",
+            "cart_toggle", "filter_sheet_open", "cart_view_toggle", "cart_clear",
+            "banner_impression", "banner_dismiss");
 
     private static final int MAX_BATCH = 20;
     private static final int MAX_TEXT = 120;
+    private static final Pattern VARIANT_TOKEN = Pattern.compile("[a-z0-9_-]{1,16}");
     private static final int MAX_PROPS = 6;
 
     private final AnalyticsEventService events;
@@ -106,10 +116,20 @@ public class EventController {
                     trim(in.clientTs()),
                     ipHash,
                     in.dev(),
+                    variant(in.variant()),
                     eventId(in.eventId())));
         }
         events.append(accepted);
         return ResponseEntity.ok(Map.of("accepted", accepted.size()));
+    }
+
+    // 실험 갈래는 짧은 토큰만 받는다. 자유 문자열로 열어두면 아무 값이나
+    // 섞여 들어와 나중에 갈래별로 가를 때 무엇이 진짜 갈래인지 알 수 없다.
+    // 갈래가 늘 때마다 서버를 고치지 않도록 목록 대신 모양으로 거른다.
+    private static String variant(String v) {
+        if (v == null) return null;
+        String t = v.trim();
+        return VARIANT_TOKEN.matcher(t).matches() ? t : null;
     }
 
     private static String trim(String v) {
@@ -157,6 +177,7 @@ public class EventController {
             Map<String, String> props,
             String clientTs,
             Boolean dev,
+            String variant,
             String eventId
     ) {
     }

@@ -1,5 +1,8 @@
 package com.discounttracker.banner;
 
+import com.discounttracker.brand.BrandCatalog;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Component;
@@ -26,26 +29,55 @@ import java.util.Map;
  *
  * <p>날짜 판정은 여기서만 한다. 프론트는 받은 것을 그대로 띄우기만 한다 —
  * 프론트에서 판정하면 사용자 기기 시계를 따라가 시차 문제가 생긴다.
+ *
+ * <p>브랜드명도 여기서 대표명으로 맞춰 내려보낸다. 프론트는 배너 브랜드명을
+ * 그대로 로고 파일명으로 쓰는데(BrandLogo), 손으로 적는 파일이라 앱에서
+ * 복사한 표기가 그대로 들어온다 — 2026-08-21 배너에 {@code goobne}라고
+ * 적혀 로고 파일(굽네치킨.png)을 못 찾고 폴백 글자만 떴다. brands.yml의
+ * 별칭표가 이미 서버에 있으니 여기서 한 번 통과시킨다.
  */
 @Component
 public class BannerCatalog {
 
+    private static final Logger log = LoggerFactory.getLogger(BannerCatalog.class);
+
     private final Resource source;
     private final Clock clock;
+    private final BrandCatalog brands;
 
     /** 기간 밖인 것까지 전부. 걸러내는 건 {@link #active()}에서 한다. */
     private volatile List<Banner> all = List.of();
 
     public BannerCatalog(@Value("${discount.banners-path:classpath:banners.yml}") Resource source,
-                         Clock clock) {
+                         Clock clock, BrandCatalog brands) {
         this.source = source;
         this.clock = clock;
+        this.brands = brands;
         reload();
     }
 
-    /** 파일을 갈아끼웠을 때 다시 읽는다. 읽기에 실패하면 이전 목록을 그대로 둔다. */
+    /**
+     * 파일을 갈아끼웠을 때 다시 읽는다. 읽기에 실패하면 이전 목록을 그대로 둔다.
+     *
+     * <p>실패를 삼키는 이유: 배너는 부가 정보인데, 이 파일 하나가 깨지면
+     * 생성자에서 예외가 올라가 스프링 컨텍스트가 못 뜨고 브랜드·통계·이벤트
+     * 수집까지 통째로 죽는다. 2026-08-21 새벽에 배너 항목 사이 콤마 하나가
+     * 빠져 API가 502였고 systemd가 재시작을 네 번 반복했다.
+     *
+     * <p>항목 단위 오류는 {@link #toBanner}가 이미 건너뛰고 있었는데, 파일
+     * 전체가 파싱 안 되는 경우는 막혀 있지 않았다.
+     *
+     * <p>배너만 안 보이고 나머지는 살아야 한다. 실패는 로그로 남고
+     * {@code POST /api/reload} 응답 건수로도 드러난다 — 고친 줄 알았는데
+     * 건수가 그대로면 아직 깨져 있는 것이다.
+     */
     public final void reload() {
-        all = read();
+        try {
+            all = read();
+        } catch (RuntimeException e) {
+            log.error("banners.yml을 읽지 못해 이전 목록을 유지한다(배너 {}건). "
+                    + "파일을 고친 뒤 POST /api/reload로 다시 시도한다.", all.size(), e);
+        }
     }
 
     /**
@@ -74,12 +106,14 @@ public class BannerCatalog {
             List<Banner> parsed = new ArrayList<>();
             for (Object item : list) {
                 if (item instanceof Map<?, ?> map) {
-                    Banner banner = toBanner((Map<String, Object>) map);
+                    Banner banner = toBanner((Map<String, Object>) map, brands);
                     if (banner != null) parsed.add(banner);
                 }
             }
             return List.copyOf(parsed);
         } catch (IOException e) {
+            // 파일이 사라졌거나 못 읽는 경우. 부르는 쪽(reload)이 이전 목록을
+            // 유지하도록 예외 종류를 맞춘다.
             throw new IllegalStateException("banners.yml 읽기 실패", e);
         }
     }
@@ -91,7 +125,7 @@ public class BannerCatalog {
      * 기동을 막거나 reload를 500으로 만들면 나머지 배너까지 같이 죽는다.
      * 몇 건이 올라갔는지는 {@code POST /api/reload} 응답으로 확인한다.
      */
-    private static Banner toBanner(Map<String, Object> attrs) {
+    private static Banner toBanner(Map<String, Object> attrs, BrandCatalog brands) {
         String id = text(attrs.get("id"));
         String platform = text(attrs.get("platform"));
         String url = text(attrs.get("url"));
@@ -105,9 +139,14 @@ public class BannerCatalog {
         }
 
         Object priority = attrs.get("priority");
+        // 별칭표에 없는 이름은 canonical이 그대로 돌려준다 — 대표명을 직접
+        // 적은 배너(BBQ, bhc, 파파존스)는 지금처럼 그냥 통과한다. 표기가
+        // 대소문자만 다르면 여전히 못 잡는다. 그때는 brands.yml에 그 표기를
+        // 별칭으로 한 줄 더 적는다.
+        String brand = text(attrs.get("brand"));
         return new Banner(
                 id,
-                text(attrs.get("brand")),
+                brand == null ? null : brands.canonical(brand),
                 platform,
                 url,
                 amount,

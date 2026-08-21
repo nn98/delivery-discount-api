@@ -60,6 +60,8 @@ curl -X POST https://bebeggars.duckdns.org/api/reload
 - `analytics/` — 방문 이벤트 수집(아래 "방문 측정 (analytics)" 절 참고)
   - `EventController` — POST /api/events
   - `EventLog` — `data/events.jsonl`에 append
+  - `AnalyticsEventService` — 원본 기록과 PostHog outbox 등록 순서 조정
+  - `PostHogOutbox`, `PostHogForwardingWorker` — 영속 큐와 비동기 전달
   - `ClientFingerprint` — IP를 날짜별 솔트로 해시(원본 미저장)
   - `EventRateLimiter` — IP 해시별 분당 상한
   - `StatsController`, `TrafficStatsService` — GET /api/stats/traffic 집계 조회,
@@ -79,9 +81,18 @@ curl -X POST https://bebeggars.duckdns.org/api/reload
 
 ## 방문 측정 (analytics)
 
-경로·재방문·체류·행동을 자체 API로만 수집한다. 외부 분석 도구(GA4 등)를
-안 쓰므로 이용자 데이터가 제3자로 넘어가지 않는다 — 왜 자체 구현인지는
-[ADR-005](docs/decisions/ADR-005-first-party-analytics.md).
+경로·재방문·체류·행동은 자체 API가 수집하고 `events.jsonl`을 원본으로
+보존한다. **서버 outbox는 2026-08-21 현재 꺼져 있다**
+(`DISCOUNT_POSTHOG_ENABLED=false`) — 웹 SDK가 직접 보내는 것과 겹쳐 PostHog에
+`$pageview`가 두 번 기록됐다. 우리가 만든 이벤트는 같은 `eventId`를
+`$insert_id`로 써서 합쳐지지만, SDK가 자동으로 쏘는 이벤트는 제 uuid를 달고
+와서 그 규칙에 안 걸린다.
+
+끈 대가는 광고 차단기·DNT로 클라이언트가 막힌 방문자를 아예 못 본다는
+것이다(실측 10% 안팎, `scripts/coverage_snapshot.sh`). 다시 켠다면 SDK의
+자동 발사를 먼저 확인해야 한다. 자체 수집을 둔 배경은
+[ADR-005](docs/decisions/ADR-005-first-party-analytics.md), 전달 세부사항은
+[트래픽 수집·통계 문서](docs/traffic-analytics.md)를 참고한다.
 
 ### 엔드포인트
 
@@ -130,6 +141,35 @@ curl -X POST http://localhost:8080/api/events \
 ```bash
 DISCOUNT_EVENT_LOG_PATH=/tmp/events.jsonl ./gradlew bootRun
 ```
+
+### PostHog outbox (웹 SDK 직접 전송 시 비활성)
+
+웹 SDK와 서버가 같은 이벤트를 이중 전송하지 않도록 웹 SDK 직접 전송 배포 전에
+운영 systemd 환경에 다음 값을 명시한다. 비활성 상태에서도 `/api/events`와
+`events.jsonl` 기록은 그대로 동작한다.
+
+```bash
+DISCOUNT_POSTHOG_ENABLED=false
+```
+
+롤백으로 서버 전달을 다시 사용할 때만 다음 값을 모두 주입한다. 토큰은 저장소나
+서비스 유닛 본문에 직접 기록하지 않는다.
+
+```bash
+DISCOUNT_POSTHOG_ENABLED=true
+POSTHOG_PROJECT_TOKEN=<project-token>
+POSTHOG_HOST=https://us.i.posthog.com
+DISCOUNT_POSTHOG_OUTBOX_PATH=/home/ubuntu/delivery-discount-api/data/posthog-outbox
+```
+
+원본 기록 후 이벤트별 pending 파일을 만들고 즉시 비동기 전송한다. 실패하면
+1시간 간격으로 재시도하며, 최초 시도를 포함해 5회 실패한 파일은
+`posthog-outbox/dead-letter/`로 이동한다. pending과 dead-letter에는
+`ipHash`를 저장하지 않고 `dev=true` 이벤트는 등록하지 않는다.
+
+`DISCOUNT_POSTHOG_ENABLED=true`인데 토큰·명시적인 outbox 경로가 없거나
+outbox 디렉터리를 준비할 수 없으면 애플리케이션 시작이 실패한다. 실행 중
+PostHog 장애는 `/api/events`의 JSONL 기록과 `accepted` 응답에 영향을 주지 않는다.
 
 ### 집계 예시
 
@@ -191,8 +231,22 @@ brands:
 
 ## 당일 행사 배너 추가·수정
 
-`src/main/resources/banners.yml`을 고치고 `POST /api/reload`. 프론트 재배포는
-필요 없다.
+운영 서버는 jar 밖 파일을 문다(`DISCOUNT_BANNERS_PATH`, 기본
+`/home/ubuntu/delivery-discount-api/data/banners.yml`). 그 파일을 고치고
+`POST /api/reload`. 프론트 재배포도 API 재배포도 필요 없다.
+
+> **고친 뒤 파싱부터 확인한다.**
+>
+> ```bash
+> ssh <서버> "python3 -c \"import yaml; d=yaml.safe_load(open('/home/ubuntu/delivery-discount-api/data/banners.yml')); print('OK', len(d['banners']), '건')\""
+> ```
+>
+> `reload`는 파싱에 실패해도 서비스를 죽이지 않고 이전 목록을 유지한다
+> (2026-08-21 사고 뒤 그렇게 바꿨다). 그래서 **고친 줄 알았는데 건수가
+> 그대로면 아직 깨져 있는 것**이다. 응답의 `banners` 수를 꼭 본다.
+>
+> 항목 사이 콤마를 빠뜨리는 실수가 잦다. `extra` 값에 콤마가 들어가면
+> 따옴표로 감싸야 한다 — `{}` 안에서는 콤마가 항목 구분자로 먹힌다.
 
 ```yaml
 banners:
@@ -225,4 +279,3 @@ banners:
 **필수 값이 빠진 항목은 건너뛴다.** 사람이 손으로 고치는 파일이라 오타 하나가
 기동이나 reload 전체를 죽이면 안 된다. 몇 건이 올라갔는지는 reload 응답의
 `banners` 값으로 확인한다.
-
