@@ -1,6 +1,9 @@
 package com.discounttracker.banner;
 
 import java.time.LocalDate;
+import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * 화면 맨 위에 띄우는 당일 행사 한 건.
@@ -18,10 +21,10 @@ import java.time.LocalDate;
  *                 원장에서 떼어낸 이유가 사라진다.
  * @param period   금액 우측 상단에 붙는 기간 문구("8/11 하루만").
  * @param extra    부가 조건. 없으면 null이고 화면에서 그 줄이 사라진다.
- * @param minOrder 최소주문금액. 선택이지만 적어두면 이 배너가 오퍼로 설 때
- *                 조건으로 함께 들어간다. {@code extra}에 "18,000원↑"이라고
- *                 적어도 그건 사람이 읽는 문장일 뿐이라, 오퍼 상세의 조건
- *                 칸은 빈 채로 "최소주문 미확인"이 뜬다.
+ * @param minOrder 최소주문금액. 적어두면 이 배너가 오퍼로 설 때 조건으로
+ *                 함께 들어간다. 안 적으면 {@code extra}에서 도로 뽑는다
+ *                 ({@link #effectiveMinOrder()}) — 사람이 둘 다 적는 일이 거의
+ *                 없어서 이 칸만 비운 배너가 계속 나왔다.
  * @param color    브랜드색 강제 지정. 없으면 로고에서 뽑고, 그마저 실패하면
  *                 플랫폼 색으로 간다(프론트 brandColor.js).
  * @param priority 낮을수록 먼저. 안 적으면 {@link #DEFAULT_PRIORITY}.
@@ -41,6 +44,139 @@ public record Banner(
         int priority) {
 
     static final int DEFAULT_PRIORITY = 999;
+
+    /**
+     * {@code extra}의 "18,900원↑" / "18,900원 이상"에서 앞 숫자.
+     *
+     * <p>맨 앞 금액만 본다. "25,000원↑, 고정 6,000+선착순 4,000"처럼 뒤에
+     * 다른 금액이 따라붙는 문구가 흔하다 — 그것까지 잡으면 할인액을
+     * 최소주문금액으로 읽는다.
+     */
+    private static final Pattern EXTRA_MIN_ORDER = Pattern.compile(
+            // 맨 앞의 "18,900원↑" / "18,900원 이상"
+            "^\\s*([0-9][0-9,]*)\\s*원\\s*(?:↑|이상)"
+            // 또는 어디에 있든 "최소주문 20,000원" — 말로 밝힌 경우
+            + "|최소주문\\s*([0-9][0-9,]*)\\s*원");
+
+    /**
+     * 오퍼 조건으로 쓸 최소주문금액. 명시로 적은 값이 먼저다.
+     *
+     * <p>배너를 올리는 사람은 {@code extra}에 "16,000원↑"를 적고 끝낸다.
+     * 실측(2026-08-25)으로 살아 있는 배너 셋 전부가 extra에는 금액을
+     * 적고 minOrder는 비워 두어, 카드에 선 오퍼가 전부 "최소주문 미확인"
+     * 이었다. 그 문장을 몸도 읽게 해서 손으로 두 번 적는 일을 없앱니다.
+     */
+    public Integer effectiveMinOrder() {
+        Integer fromText = minOrderFromExtra();
+        return fromText != null ? fromText : minOrder;
+    }
+
+    private Integer minOrderFromExtra() {
+        if (extra == null) return null;
+        Matcher m = EXTRA_MIN_ORDER.matcher(extra);
+        if (!m.find()) return null;
+        String digits = m.group(1) != null ? m.group(1) : m.group(2);
+        try {
+            return Integer.valueOf(digits.replace(",", ""));
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /** {@code amount}의 맨 앞 "n,nnn원". 정액이 아니면 null. */
+    private static final Pattern HEADLINE = Pattern.compile("([0-9][0-9,]*)\\s*원");
+
+    /**
+     * "4,000+10%" — 정액 뒤에 정률이 붙는다.
+     *
+     * <p>두 자리에 다 나온다. amount의 괄호 안("6,500원(4,000+10%)")이기도
+     * 하고 extra의 문장 안("고정 6,000+선착순 10%")이기도 하다. 사이의
+     * 말("선착순 ")은 배너마다 달라 길이로만 제한한다.
+     */
+    private static final Pattern FIXED_PLUS_RATE =
+            Pattern.compile("([0-9][0-9,]*)\\s*원?\\s*\\+\\s*\\D{0,6}?([0-9]{1,3})\\s*%");
+
+    /** "고정 6,000+선착순 4,000" — 정액 두 장을 겹쳐 쓴다. */
+    private static final Pattern FIXED_PLUS_FIXED =
+            Pattern.compile("([0-9][0-9,]*)\\s*원?\\s*\\+\\s*\\D{0,6}?([0-9][0-9,]*)(?!\\s*%)");
+
+    /**
+     * 복합쿠폰을 구간으로 푸는다. 아니면 빈 목록.
+     *
+     * <p>요기요 배너는 한 칸에 쿠폰 두 장을 적어 보낸다 — 굽네치킨
+     * "6,500원(4,000+10%)", 파파존스 "고정 6,000+선착순 10%". 대표값 하나로만
+     * 둔 채 카드에 세우면, 선착순가 끝나 고정분만 남았을 때 사람이
+     * 그걸 알 길이 없다.
+     *
+     * <p><b>정률분은 최소주문금액에서 계산해 amount에 넣는다.</b>
+     * {@code DiscountLadder}가 amount만 더하고 percent를 다시 계산하지 않기
+     * 때문이다("각 구간의 amount는 이미 그 문턱에서 실제 받는 금액").
+     *
+     * <p>대표값이 문턱에서의 합보다 크면 그건 상한이다 — 파파존스
+     * 실측(2026-08-25)에서 "최대 10,000원"은 고정 6,000 + 정률 상한 4,000이었고,
+     * 25,000원에서 실제 받는 것은 6,000 + 2,500 = 8,500이다. 상한을
+     * {@code cap}으로 남기고 사다리는 보장되는 값을 낸다.
+     *
+     * <p>대표값이 합보다 작으면 문구를 잘못 읽은 것이다 — 지어내지 않고
+     * 빈 목록을 돌려 대표값 하나로 둔다.
+     */
+    public List<com.discounttracker.offer.DiscountTier> compoundTiers() {
+        Integer headline = headlineAmount();
+        Integer min = effectiveMinOrder();
+        if (headline == null || min == null) return List.of();
+
+        Matcher rate = firstMatch(FIXED_PLUS_RATE);
+        if (rate != null) {
+            Integer fixed = digits(rate.group(1));
+            Integer percent = digits(rate.group(2));
+            if (fixed == null || percent == null || percent == 0) return List.of();
+            int rated = min * percent / 100;
+            if (headline < fixed + rated) return List.of();
+            // 대표값이 더 크면 그 초과분이 정률의 상한이다. 같으면
+            // 상한을 알 길이 없으니 붙이지 않는다.
+            Integer cap = headline > fixed + rated ? headline - fixed : null;
+            return List.of(
+                    new com.discounttracker.offer.DiscountTier(min, fixed, null, null, null, null, null),
+                    new com.discounttracker.offer.DiscountTier(min, rated, percent, cap, null, null, null));
+        }
+
+        Matcher two = firstMatch(FIXED_PLUS_FIXED);
+        if (two != null) {
+            Integer a = digits(two.group(1));
+            Integer b = digits(two.group(2));
+            if (a == null || b == null) return List.of();
+            if (a + b != headline) return List.of();
+            return List.of(
+                    new com.discounttracker.offer.DiscountTier(min, a, null, null, null, null, null),
+                    new com.discounttracker.offer.DiscountTier(min, b, null, null, null, null, null));
+        }
+        return List.of();
+    }
+
+    /** amount를 먼저 보고 extra를 본다. 둘 다 쓰이는 자리다. */
+    private Matcher firstMatch(Pattern pattern) {
+        for (String text : new String[] {amount, extra}) {
+            if (text == null) continue;
+            Matcher m = pattern.matcher(text);
+            if (m.find()) return m;
+        }
+        return null;
+    }
+
+    /** 대표값. "최대 30%"처럼 정액이 아니면 null. */
+    private Integer headlineAmount() {
+        if (amount == null) return null;
+        Matcher m = HEADLINE.matcher(amount);
+        return m.find() ? digits(m.group(1)) : null;
+    }
+
+    private static Integer digits(String raw) {
+        try {
+            return Integer.valueOf(raw.replace(",", ""));
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
 
     /** {@code startsOn <= day <= endsOn}. 경계일 자신도 포함이다. */
     boolean activeOn(LocalDate day) {
