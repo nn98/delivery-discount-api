@@ -46,9 +46,16 @@ jobs:
           sudo systemctl restart delivery-discount-api.service
 
       - name: Health check
+        # 고정 5초 한 번은 부족하다 — 2026-09-14 새 jar가 4.3초에 떴는데
+        # curl이 60ms 먼저 찔러 멀쩡한 배포를 롤백했다. 30초까지 1초마다 본다.
         run: |
-          sleep 5
-          curl -sf http://localhost:8088/api/brands -o /dev/null
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8088/api/brands -o /dev/null; then
+              echo "up after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "not up after 30s"; exit 1
 
       - name: Rollback on failed health check
         if: failure()
