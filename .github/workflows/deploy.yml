@@ -40,14 +40,38 @@ jobs:
         # 2026-10-28: 재시작 때 약 5초 끊기던 것을 없앴다. 임시 인스턴스(8089)를 먼저 띄우고 그 사이 본 인스턴스를
         # 교체한다. 헬스체크, 롤백, jar 정리는 스크립트가 한다(mono api/deploy/prod/README.md). 종료 코드가 0이 아니면
         # 이 단계가 실패해 아래 슬랙 알림이 나간다(1 임시 인스턴스 안 뜸, 2 이전 jar로 복구, 3 수동 확인).
+        # 2026-11-02(mono #214): 종료 코드를 남겨 아래 단계가 코드별 문구(deploy/prod/deploy_message.py)로 알린다.
+        id: deploy
         run: |
           SHA=$(git rev-parse --short HEAD)
           NEW_JAR="$DEPLOY_DIR/delivery-discount-api-$SHA.jar"
           cp build/libs/delivery-discount-api-0.0.1.jar "$NEW_JAR"
+          set +e
           python3 deploy/prod/stage_deploy.py "$NEW_JAR" --deploy-dir "$DEPLOY_DIR"
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: 배포 결과를 슬랙 채널로 (종료 코드별)
+        if: always() && steps.deploy.outputs.code != ''
+        continue-on-error: true
+        env:
+          SLACK_OPS_TOKEN: ${{ secrets.SLACK_OPS_TOKEN }}
+          SLACK_OPS_CHANNEL: ${{ secrets.SLACK_OPS_CHANNEL }}
+        run: |
+          [ -n "$SLACK_OPS_TOKEN" ] || { echo "SLACK_OPS_TOKEN 없음 - 알림 생략"; exit 0; }
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          TEXT=$(python3 deploy/prod/deploy_message.py "${{ steps.deploy.outputs.code }}" "${{ github.repository }}" "$GITHUB_SHA" "$RUN_URL") \
+            || TEXT="❌ 배포 종료 코드 ${{ steps.deploy.outputs.code }}: ${{ github.workflow }} (${{ github.repository }}, ${GITHUB_SHA::7})"$'\n'"$RUN_URL"
+          BODY=$(TEXT="$TEXT" python3 -c 'import json,os;print(json.dumps({"channel":os.environ["SLACK_OPS_CHANNEL"],"text":os.environ["TEXT"]}))')
+          curl -s -X POST https://slack.com/api/chat.postMessage -H "Authorization: Bearer $SLACK_OPS_TOKEN" -H "Content-type: application/json; charset=utf-8" --data "$BODY"
+
+      - name: 배포 실패면 작업 실패
+        if: steps.deploy.outputs.code != '' && steps.deploy.outputs.code != '0'
+        run: exit ${{ steps.deploy.outputs.code }}
 
       - name: 실패를 슬랙 채널로 (mono docs/design/26-ops-monitoring.md)
-        if: failure()
+        # 배포 단계 전(빌드 등)에서 죽은 경우만. 배포 단계의 실패는 위 코드별 알림이 이미 보냈다.
+        if: failure() && steps.deploy.outputs.code == ''
         env:
           SLACK_OPS_TOKEN: ${{ secrets.SLACK_OPS_TOKEN }}
           SLACK_OPS_CHANNEL: ${{ secrets.SLACK_OPS_CHANNEL }}
